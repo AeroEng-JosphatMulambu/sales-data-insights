@@ -1,0 +1,186 @@
+select *
+from sales_data_sample
+
+/*check for null values, duplicates in important columns: order number 
+order date, status, month id, year id, product line, product code,deal size
+*/
+select ORDERNUMBER
+from sales_data_sample
+where ORDERNUMBER is null
+
+select ORDERDATE
+from sales_data_sample
+where ORDERDATE is null
+
+select STATUS
+from sales_data_sample
+where STATUS is null
+
+select MONTH_ID
+from sales_data_sample
+where MONTH_ID is null
+
+select YEAR_ID
+from sales_data_sample
+where YEAR_ID is null
+
+select PRODUCTLINE
+from sales_data_sample
+where PRODUCTLINE is null
+
+select PRODUCTCODE
+from sales_data_sample
+where PRODUCTCODE is null
+
+select DEALSIZE
+from sales_data_sample
+where DEALSIZE is null
+
+select CUSTOMERNAME
+from sales_data_sample
+where CUSTOMERNAME is null
+
+select ORDERNUMBER,SALES,ORDERDATE,STATUS,MONTH_ID,YEAR_ID,PRODUCTCODE, COUNT(*) as [number of duplicates]
+from sales_data_sample
+group by ORDERNUMBER,SALES,ORDERDATE,STATUS,MONTH_ID,YEAR_ID,PRODUCTCODE
+order by COUNT(*) desc
+
+select CAST(MIN(ORDERDATE) as date), CAST(max(ORDERDATE) as date)
+from sales_data_sample
+
+select distinct STATUS
+from sales_data_sample
+
+-----------------------------------------------------------------------------
+
+--sales by product line
+--generally
+select PRODUCTLINE, ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by PRODUCTLINE
+order by 2 desc
+
+--product line per year
+select PRODUCTLINE, YEAR_ID,MONTH_ID,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by PRODUCTLINE,YEAR_ID,MONTH_ID
+order by 4 desc
+
+--product line per month
+select PRODUCTLINE,MONTH_ID,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by PRODUCTLINE,MONTH_ID
+order by 3 desc
+
+--product line per deal size
+select PRODUCTLINE,DEALSIZE,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by PRODUCTLINE,DEALSIZE
+order by 3 desc
+
+--product line per deal size
+select DEALSIZE,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by DEALSIZE
+order by 2 desc
+
+--product line per country
+select COUNTRY,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by COUNTRY
+order by 2 desc
+
+--product line per country
+select COUNTRY,PRODUCTLINE,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by COUNTRY,PRODUCTLINE
+order by 3 desc
+
+--which deal size and product line is doing the most in the countries we are present
+select COUNTRY,PRODUCTLINE,DEALSIZE,ROUND(SUM(SALES),2) as [product line revenue]
+from sales_data_sample
+group by COUNTRY,PRODUCTLINE,DEALSIZE
+order by 1 desc,4 desc
+
+-------------------------------------------------------------------------------------------------
+--customer segmentation
+if OBJECT_ID(N'tempdb..#customer_segmentation') is not null
+begin
+drop table #customer_segmentation
+end
+go
+with cte1 as (
+select
+	CUSTOMERNAME,
+	CAST(MAX(ORDERDATE) as date) as [customer last purchase],
+	DATEDIFF(dd,CAST(MAX(ORDERDATE) as date),(select CAST(MAX(ORDERDATE) as date) from sales_data_sample)) as [recency],
+	COUNT(ORDERNUMBER) as [frequency],
+	ROUND(SUM(SALES),2) as [monetary]
+
+from sales_data_sample
+group by CUSTOMERNAME
+),
+cte2 as (
+select *,
+	NTILE(4) over (order by recency desc) as [rfm_R],
+	NTILE(4) over (order by frequency) as [rfm_F],
+	NTILE(4) over (order by monetary) as [rfm_M]
+from cte1
+)
+select *,
+	case
+		when rfm_R in (1,2) and rfm_F in (1,2) and rfm_M in (1,2) then 'lost customer'
+		when rfm_R in (1,2) and rfm_F in (1,2) and rfm_M in (3,4) then 'lost need to find'
+		when rfm_R in (1,2) and rfm_F in (3,4) and rfm_M in (3,4) then 'lost priority to find'
+		when rfm_R in (1,2) and rfm_F in (3,4) and rfm_M in (1,2) then 'lost customer'
+		----------------------------------------------------------------------------
+		when rfm_R in (3,4) and rfm_F in (1,2) and rfm_M in (1,2) then 'new need to keep'
+		when rfm_R in (3,4) and rfm_F in (1,2) and rfm_M in (3,4) then 'new need to keep priority'
+		when rfm_R in (3,4) and rfm_F in (3,4) and rfm_M in (3,4) then 'priority'
+		when rfm_R in (3,4) and rfm_F in (3,4) and rfm_M in (1,2) then 'loyal'
+	end as [customer status]
+	into #customer_segmentation
+from cte2
+order by monetary desc
+
+select count(CUSTOMERNAME) as [number of customers], [customer status]
+from #customer_segmentation
+group by [customer status]
+order by 1 desc
+
+---------------------------------------------------------------------------------
+--which products could be sold together
+with cte3 as(
+select distinct(ORDERNUMBER),STUFF(	(select ','+PRODUCTCODE
+				from sales_data_sample as [filtered]
+				where ORDERNUMBER in  (	select ordernumber
+										from   (select ORDERNUMBER, COUNT(ORDERNUMBER) as [items per order]
+												from sales_data_sample
+												group by ORDERNUMBER) as [orders with multiple items]
+										where [items per order] = 2 and filtered.ORDERNUMBER = main.ORDERNUMBER
+										)
+				for xml path('')),1,1,'') as [product codes]
+from sales_data_sample as [main]
+)
+select [product codes], COUNT(*) as [number of times bought together]
+from cte3
+where [product codes] is not null
+group by [product codes]
+order by 2 desc
+
+----------------------------------------------------------------------------------------
+--seasonal trends
+with cte4 as (
+select PRODUCTLINE,
+	case
+		when MONTH_ID in (1,2,3,4) then 1
+		when MONTH_ID in (5,6,7,8) then 2
+		when MONTH_ID in (9,10,11,12) then 3
+	end as [quorta]
+from sales_data_sample
+)
+select *,
+	sum(quorta) as [sold per quorta]
+from cte4
+group by PRODUCTLINE, quorta
+order by quorta
